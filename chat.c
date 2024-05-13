@@ -2,11 +2,13 @@
 #include <glib/gunicode.h> /* for utf8 strlen */
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <gmp.h>
 #include <netdb.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <getopt.h>
+#include <openssl/err.h>
 #include "dh.h"
 #include "keys.h"
 
@@ -14,18 +16,36 @@
 #define PATH_MAX 1024
 #endif
 
+#define MASTER_LEN 32
+#define MAX_MESSAGE_SIZE 512
+#define MAC_LEN 32
+
+struct dhKey myKey;
+struct dhKey yourKey;
+static unsigned char MasterKey[MASTER_LEN];
+
+static unsigned char *randMe, *randYou; // Initializtion Vector (0 - 15)
+static unsigned char *enkme, *enkyou;   // Encryption Keys (16-47)
+static unsigned char *macme, *macyou;   // MAC (32-47)
+
+EVP_CIPHER_CTX* csend = NULL;
+EVP_CIPHER_CTX* crecv = NULL;
+
 static GtkTextBuffer* tbuf; /* transcript buffer */
 static GtkTextBuffer* mbuf; /* message buffer */
 static GtkTextView*  tview; /* view for transcript */
 static GtkTextMark*   mark; /* used for scrolling to end of transcript, etc */
 
+static int port = 1337;
+static char hostname[HOST_NAME_MAX+1] = "localhost";
+
 static pthread_t trecv;     /* wait for incoming messagess and post to queue */
 void* recvMsg(void*);       /* for trecv */
 
-#define max(a, b)         \
-	({ typeof(a) _a = a;    \
-	 typeof(b) _b = b;    \
-	 _a > _b ? _a : _b; })
+#define max(a, bs)         \
+        ({ typeof(a) _a = a;    \
+         typeof(b) _b = b;    \
+         _a > _b ? _a : _b; })
 
 /* network stuff... */
 
@@ -34,70 +54,69 @@ static int isclient = 1;
 
 static void error(const char *msg)
 {
-	perror(msg);
-	exit(EXIT_FAILURE);
+        perror(msg);
+        exit(EXIT_FAILURE);
 }
 
 int initServerNet(int port)
 {
-	int reuse = 1;
-	struct sockaddr_in serv_addr;
-	listensock = socket(AF_INET, SOCK_STREAM, 0);
-	setsockopt(listensock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-	/* NOTE: might not need the above if you make sure the client closes first */
-	if (listensock < 0)
-		error("ERROR opening socket");
-	bzero((char *) &serv_addr, sizeof(serv_addr));
-	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_addr.s_addr = INADDR_ANY;
-	serv_addr.sin_port = htons(port);
-	if (bind(listensock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
-		error("ERROR on binding");
-	fprintf(stderr, "listening on port %i...\n",port);
-	listen(listensock,1);
-	socklen_t clilen;
-	struct sockaddr_in  cli_addr;
-	sockfd = accept(listensock, (struct sockaddr *) &cli_addr, &clilen);
-	if (sockfd < 0)
-		error("error on accept");
-	close(listensock);
-	fprintf(stderr, "connection made, starting session...\n");
-	/* at this point, should be able to send/recv on sockfd */
-	return 0;
+        int reuse = 1;
+        struct sockaddr_in serv_addr;
+        listensock = socket(AF_INET, SOCK_STREAM, 0);
+        setsockopt(listensock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        /* NOTE: might not need the above if you make sure the client closes first */
+        if (listensock < 0)
+                error("ERROR opening socket");
+        bzero((char *) &serv_addr, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = INADDR_ANY;
+        serv_addr.sin_port = htons(port);
+        if (bind(listensock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
+                error("ERROR on binding");
+        fprintf(stderr, "listening on port %i...\n",port);
+        listen(listensock,1);
+        socklen_t clilen;
+        struct sockaddr_in  cli_addr;
+        sockfd = accept(listensock, (struct sockaddr *) &cli_addr, &clilen);
+        if (sockfd < 0)
+                error("error on accept");
+        close(listensock);
+        fprintf(stderr, "connection made, starting session...\n");
+         /* at this point, should be able to send/recv on sockfd */
+        return 0;
 }
 
 static int initClientNet(char* hostname, int port)
 {
-	struct sockaddr_in serv_addr;
-	sockfd = socket(AF_INET, SOCK_STREAM, 0);
-	struct hostent *server;
-	if (sockfd < 0)
-		error("ERROR opening socket");
-	server = gethostbyname(hostname);
-	if (server == NULL) {
-		fprintf(stderr,"ERROR, no such host\n");
-		exit(0);
-	}
-	bzero((char *) &serv_addr, sizeof(serv_addr));
-	serv_addr.sin_family = AF_INET;
-	memcpy(&serv_addr.sin_addr.s_addr,server->h_addr,server->h_length);
-	serv_addr.sin_port = htons(port);
-	if (connect(sockfd,(struct sockaddr *) &serv_addr,sizeof(serv_addr)) < 0)
-		error("ERROR connecting");
-	/* at this point, should be able to send/recv on sockfd */
-	return 0;
+        struct sockaddr_in serv_addr;
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        struct hostent *server;
+        if (sockfd < 0)
+                error("ERROR opening socket");
+        server = gethostbyname(hostname);
+        if (server == NULL) {
+                fprintf(stderr,"ERROR, no such host\n");
+                exit(0);
+        }
+        bzero((char *) &serv_addr, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        memcpy(&serv_addr.sin_addr.s_addr,server->h_addr,server->h_length);
+        serv_addr.sin_port = htons(port);
+        if (connect(sockfd,(struct sockaddr *) &serv_addr,sizeof(serv_addr)) < 0)
+                error("ERROR connecting");
+        /* at this point, should be able to send/recv on sockfd */
+        return 0;
 }
-
 static int shutdownNetwork()
 {
-	shutdown(sockfd,2);
-	unsigned char dummy[64];
-	ssize_t r;
-	do {
-		r = recv(sockfd,dummy,64,0);
-	} while (r != 0 && r != -1);
-	close(sockfd);
-	return 0;
+        shutdown(sockfd,2);
+        unsigned char dummy[64];
+        ssize_t r;
+        do {
+                r = recv(sockfd,dummy,64,0);
+        } while (r != 0 && r != -1);
+        close(sockfd);
+        return 0;
 }
 
 /* end network stuff. */
@@ -116,66 +135,174 @@ static const char* usage =
  * that messsage is a NULL terminated string.  If ensurenewline is non-zero, then
  * a newline may be added at the end of the string (possibly overwriting the \0
  * char!) and the view will be scrolled to ensure the added line is visible.  */
-static void tsappend(char* message, char** tagnames, int ensurenewline)
+ 
+ static void tsappend(char* message, char** tagnames, int ensurenewline)
 {
-	GtkTextIter t0;
-	gtk_text_buffer_get_end_iter(tbuf,&t0);
-	size_t len = g_utf8_strlen(message,-1);
-	if (ensurenewline && message[len-1] != '\n')
-		message[len++] = '\n';
-	gtk_text_buffer_insert(tbuf,&t0,message,len);
-	GtkTextIter t1;
-	gtk_text_buffer_get_end_iter(tbuf,&t1);
-	/* Insertion of text may have invalidated t0, so recompute: */
-	t0 = t1;
-	gtk_text_iter_backward_chars(&t0,len);
-	if (tagnames) {
-		char** tag = tagnames;
-		while (*tag) {
-			gtk_text_buffer_apply_tag_by_name(tbuf,*tag,&t0,&t1);
-			tag++;
-		}
-	}
-	if (!ensurenewline) return;
-	gtk_text_buffer_add_mark(tbuf,mark,&t1);
-	gtk_text_view_scroll_to_mark(tview,mark,0.0,0,0.0,0.0);
-	gtk_text_buffer_delete_mark(tbuf,mark);
+        GtkTextIter t0;
+        gtk_text_buffer_get_end_iter(tbuf,&t0);
+        size_t len = g_utf8_strlen(message,-1);
+        if (ensurenewline && message[len-1] != '\n')
+                message[len++] = '\n';
+        gtk_text_buffer_insert(tbuf,&t0,message,len);
+        GtkTextIter t1;
+        gtk_text_buffer_get_end_iter(tbuf,&t1);
+        /* Insertion of text may have invalidated t0, so recompute: */
+        t0 = t1;
+        gtk_text_iter_backward_chars(&t0,len);
+        if (tagnames) {
+                char** tag = tagnames;
+                while (*tag) {
+                        gtk_text_buffer_apply_tag_by_name(tbuf,*tag,&t0,&t1);
+                        tag++;
+                }
+        }
+        if (!ensurenewline) return;
+        gtk_text_buffer_add_mark(tbuf,mark,&t1);
+        gtk_text_view_scroll_to_mark(tview,mark,0.0,0,0.0,0.0);
+        gtk_text_buffer_delete_mark(tbuf,mark);
 }
 
 static void sendMessage(GtkWidget* w /* <-- msg entry widget */, gpointer /* data */)
 {
-	char* tags[2] = {"self",NULL};
-	tsappend("me: ",tags,0);
-	GtkTextIter mstart; /* start of message pointer */
-	GtkTextIter mend;   /* end of message pointer */
-	gtk_text_buffer_get_start_iter(mbuf,&mstart);
-	gtk_text_buffer_get_end_iter(mbuf,&mend);
-	char* message = gtk_text_buffer_get_text(mbuf,&mstart,&mend,1);
-	size_t len = g_utf8_strlen(message,-1);
-	/* XXX we should probably do the actual network stuff in a different
-	 * thread and have it call this once the message is actually sent. */
-	ssize_t nbytes;
-	if ((nbytes = send(sockfd,message,len,0)) == -1)
-		error("send failed");
+        // csend and macmine are initialized in the performHandshake function
 
-	tsappend(message,NULL,1);
-	free(message);
-	/* clear message text and reset focus */
-	gtk_text_buffer_delete(mbuf,&mstart,&mend);
-	gtk_widget_grab_focus(w);
+        // Get the message from the GTK text buffer
+        GtkTextIter mstart; /* start of message pointer */
+        GtkTextIter mend;   /* end of message pointer */
+        gtk_text_buffer_get_start_iter(mbuf, &mstart);
+        gtk_text_buffer_get_end_iter(mbuf, &mend);
+        char* message = gtk_text_buffer_get_text(mbuf, &mstart, &mend, 1);
+
+        // Encrypt the message
+        unsigned char encryptedMessage[MAX_MESSAGE_SIZE];
+        int encryptedLen = 0;
+
+        if (1 != EVP_EncryptUpdate(csend, encryptedMessage, &encryptedLen, (const unsigned char*)message, strlen(message))) {
+                ERR_print_errors_fp(stderr);
+                return;
+        }
+
+        // Generate MAC for the message
+        unsigned char mac[MAC_LEN];
+
+        HMAC(EVP_sha256(), macme, MAC_LEN, (const unsigned char*)message, strlen(message), mac, 0);
+        
+        
+        // Send the encrypted message along with the MAC
+        ssize_t nbytes;
+        if ((nbytes = send(sockfd, encryptedMessage, encryptedLen, 0)) == -1) {
+                error("send failed");
+                return;
+        }
+
+        if ((nbytes = send(sockfd, mac, MAC_LEN, 0)) == -1) {
+                error("send failed");
+                return;
+        }
+        
+        // Display the original message in the local UI
+        char* tags[2] = {"self", NULL};
+        tsappend("me: ", tags, 0);
+        tsappend(message, NULL, 1);
+
+        // Free dynamically allocated memory
+        free(message);
+        free(encryptedMessage);
+
+        /* clear message text and reset focus */
+        gtk_text_buffer_delete(mbuf, &mstart, &mend);
+        gtk_widget_grab_focus(w);
 }
 
 static gboolean shownewmessage(gpointer msg)
 {
-	char* tags[2] = {"friend",NULL};
-	char* friendname = "mr. friend: ";
-	tsappend(friendname,tags,0);
-	char* message = (char*)msg;
-	tsappend(message,NULL,1);
-	free(message);
-	return 0;
+        char* tags[2] = {"friend",NULL};
+        char* friendname = "mr. friend: ";
+        tsappend(friendname,tags,0);
+        char* message = (char*)msg;
+        tsappend(message,NULL,1);
+        free(message);
+        return 0;
 }
 
+void showStatusMessage(char* message)
+{
+    char* tags[2] = {"status", NULL};
+    tsappend(message, tags, 1);
+}
+
+int performHandshake()
+{
+        struct dhKey X,Y;
+        initKey(&X);
+        initKey(&Y);
+        dhGen(X.SK,X.PK); // Generate public-private key pair X
+
+        //Exchange Public Keys
+        if (isclient)
+        {
+                //Client sends its public key
+                send(sockfd, X.PK,mpz_sizeinbase(X.PK,2),0);
+
+                //Client receives the server's public key
+                mpz_t receivedKey;
+                mpz_init(receivedKey);
+                size_t keySize =  recv(sockfd,receivedKey,MASTER_LEN,0);
+
+                //Store Y.PK as receivedKey
+                mpz_set(Y.PK, receivedKey);
+                mpz_clear(receivedKey);
+        } else {
+                //Server receives the client's public key
+                mpz_t receivedKey;
+                mpz_init(receivedKey);
+                size_t keySize = recv(sockfd,receivedKey,MASTER_LEN,0);
+                 //Store Y.PK as receivedKey
+                mpz_set(Y.PK,receivedKey);
+                mpz_clear(receivedKey);
+
+                //Server sends it public
+                send(sockfd,X.PK,mpz_sizeinbase(X.PK,2),0);
+        }
+
+        //Perform 3DH key exchange and derive keys
+        dh3Final(myKey.SK, myKey.PK, X.SK, X.PK, yourKey.PK, Y.PK, MasterKey, MASTER_LEN);
+
+        //Setting pointers IV, encryption, and MAC Keys
+        //Since MasterKey size is 32
+        randMe = MasterKey + isclient * 16;
+        randYou = MasterKey + (1 - isclient) * 16;
+        enkme = MasterKey + 16 + isclient * 16;
+        enkyou = MasterKey + 16 + (1 - isclient) * 16;
+        macme = MasterKey + 32 + isclient * 16;
+        macyou = MasterKey + 32 +(1 - isclient) * 16;
+
+        //Initialize encryptions
+        csend = EVP_CIPHER_CTX_new();
+        crecv = EVP_CIPHER_CTX_new();
+        
+        /*
+         * Initialize encryption context --
+         * this will initialize the context for the specified encryption/decryption algotithm and
+         * set up the master key and IV for encryption/decryption
+         */
+
+        if (1 != EVP_EncryptInit_ex(csend,EVP_aes_256_ctr(),0,enkme,randMe))
+        {
+                ERR_print_errors_fp(stderr);
+        }
+
+        if (1 != EVP_DecryptInit_ex(crecv, EVP_aes_256_ctr(),0,enkyou,randYou))
+        {
+                ERR_print_errors_fp(stderr);
+        }
+
+        //Clean up sensitive key material from memory for security reasons
+        shredKey(&X);
+        shredKey(&Y);
+
+        return 0; // Successful
+}
 int main(int argc, char *argv[])
 {
         if (init("params") != 0) {
@@ -336,3 +463,4 @@ void* recvMsg(void*)
         }
         return 0;
 }
+
