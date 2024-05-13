@@ -178,100 +178,92 @@ static gboolean shownewmessage(gpointer msg)
 
 int main(int argc, char *argv[])
 {
-	if (init("params") != 0) {
-		fprintf(stderr, "could not read DH params from file 'params'\n");
-		return 1;
-	}
-	// define long options
-	static struct option long_opts[] = {
-		{"connect",  required_argument, 0, 'c'},
-		{"listen",   no_argument,       0, 'l'},
-		{"port",     required_argument, 0, 'p'},
-		{"help",     no_argument,       0, 'h'},
-		{0,0,0,0}
-	};
-	// process options:
-	char c;
-	int opt_index = 0;
-	int port = 1337;
-	char hostname[HOST_NAME_MAX+1] = "localhost";
-	hostname[HOST_NAME_MAX] = 0;
+        if (init("params") != 0) {
+                fprintf(stderr, "could not read DH params from file 'params'\n");
+                return 1;
+        }
+        // define long options
+        static struct option long_opts[] = {
+                {"connect",  required_argument, 0, 'c'},
+                {"listen",   no_argument,       0, 'l'},
+                {"port",     required_argument, 0, 'p'},
+                {"help",     no_argument,       0, 'h'},
+                {0,0,0,0}
+        };
+        // process options:
+        char c;
+        int opt_index = 0;
+        int port = 1337;
+        char hostname[HOST_NAME_MAX+1] = "localhost";
+        hostname[HOST_NAME_MAX]=0;
+ while ((c = getopt_long(argc, argv, "c:lp:h", long_opts, &opt_index)) != -1) {
+                switch (c) {
+                        case 'c':
+                                if (strnlen(optarg,HOST_NAME_MAX))
+                                        strncpy(hostname,optarg,HOST_NAME_MAX);
+                                break;
+                        case 'l':
+                                isclient = 0;
+                                break;
+                        case 'p':
+                                port = atoi(optarg);
+                                break;
+                        case 'h':
+                                printf(usage,argv[0]);
+                                return 0;
+                        case '?':
+                                printf(usage,argv[0]);
+                                return 1;
+                }
+        }
+         /* NOTE: might want to start this after gtk is initializ
+ed so you can
+         * show the messages in the main window instead of stderr/stdout.  If
+         * you decide to give that a try, this might be of use:
+         * https://docs.gtk.org/gtk4/func.is_initialized.html */
 
-	while ((c = getopt_long(argc, argv, "c:lp:h", long_opts, &opt_index)) != -1) {
-		switch (c) {
-			case 'c':
-				if (strnlen(optarg,HOST_NAME_MAX))
-					strncpy(hostname,optarg,HOST_NAME_MAX);
-				break;
-			case 'l':
-				isclient = 0;
-				break;
-			case 'p':
-				port = atoi(optarg);
-				break;
-			case 'h':
-				printf(usage,argv[0]);
-				return 0;
-			case '?':
-				printf(usage,argv[0]);
-				return 1;
-		}
-	}
-	/* NOTE: might want to start this after gtk is initialized so you can
-	 * show the messages in the main window instead of stderr/stdout.  If
-	 * you decide to give that a try, this might be of use:
-	 * https://docs.gtk.org/gtk4/func.is_initialized.html */
-	if (isclient) {
-		initClientNet(hostname,port);
-	} else {
-		initServerNet(port);
-	}
+        /* setup GTK... */
+        GtkBuilder* builder;
+        GObject* window;
+        GObject* button;
+        GObject* transcript;
+        GObject* message;
+        GError* error = NULL;
+        gtk_init(&argc, &argv);
+        builder = gtk_builder_new();
+        if (gtk_builder_add_from_file(builder,"layout.ui",&error) == 0) {
+                g_printerr("Error reading %s\n", error->message);
+                g_clear_error(&error);
+                return 1;
+        }
+         mark  = gtk_text_mark_new(NULL,TRUE);
+        window = gtk_builder_get_object(builder,"window");
+        g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+        transcript = gtk_builder_get_object(builder, "transcript");
+        tview = GTK_TEXT_VIEW(transcript);
+        message = gtk_builder_get_object(builder, "message");
+        tbuf = gtk_text_view_get_buffer(tview);
+        mbuf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(message));        button = gtk_builder_get_object(builder, "send");
+        g_signal_connect_swapped(button, "clicked", G_CALLBACK(sendMessage), GTK_WIDGET(message));
+        gtk_widget_grab_focus(GTK_WIDGET(message));
+        GtkCssProvider* css = gtk_css_provider_new();
+        gtk_css_provider_load_from_path(css,"colors.css",NULL);
+        gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
+                        GTK_STYLE_PROVIDER(css),
+                        GTK_STYLE_PROVIDER_PRIORITY_USER);
 
-	/* setup GTK... */
-	GtkBuilder* builder;
-	GObject* window;
-	GObject* button;
-	GObject* transcript;
-	GObject* message;
-	GError* error = NULL;
-	gtk_init(&argc, &argv);
-	builder = gtk_builder_new();
-	if (gtk_builder_add_from_file(builder,"layout.ui",&error) == 0) {
-		g_printerr("Error reading %s\n", error->message);
-		g_clear_error(&error);
-		return 1;
-	}
-	mark  = gtk_text_mark_new(NULL,TRUE);
-	window = gtk_builder_get_object(builder,"window");
-	g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-	transcript = gtk_builder_get_object(builder, "transcript");
-	tview = GTK_TEXT_VIEW(transcript);
-	message = gtk_builder_get_object(builder, "message");
-	tbuf = gtk_text_view_get_buffer(tview);
-	mbuf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(message));
-	button = gtk_builder_get_object(builder, "send");
-	g_signal_connect_swapped(button, "clicked", G_CALLBACK(sendMessage), GTK_WIDGET(message));
-	gtk_widget_grab_focus(GTK_WIDGET(message));
-	GtkCssProvider* css = gtk_css_provider_new();
-	gtk_css_provider_load_from_path(css,"colors.css",NULL);
-	gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
-			GTK_STYLE_PROVIDER(css),
-			GTK_STYLE_PROVIDER_PRIORITY_USER);
+        /* setup styling tags for transcript text buffer */
+        gtk_text_buffer_create_tag(tbuf,"status","foreground","#657b83","font","italic",NULL);
+        gtk_text_buffer_create_tag(tbuf,"friend","foreground","#6c71c4","font","bold",NULL);
+         /* start receiver thread: */
+        if (pthread_create(&trecv,0,recvMsg,0)) {
+                fprintf(stderr, "Failed to create update thread.\n");
+        }
 
-	/* setup styling tags for transcript text buffer */
-	gtk_text_buffer_create_tag(tbuf,"status","foreground","#657b83","font","italic",NULL);
-	gtk_text_buffer_create_tag(tbuf,"friend","foreground","#6c71c4","font","bold",NULL);
-	gtk_text_buffer_create_tag(tbuf,"self","foreground","#268bd2","font","bold",NULL);
+        gtk_main();
 
-	/* start receiver thread: */
-	if (pthread_create(&trecv,0,recvMsg,0)) {
-		fprintf(stderr, "Failed to create update thread.\n");
-	}
-
-	gtk_main();
-
-	shutdownNetwork();
-	return 0;
+        shutdownNetwork();
+        return 0;
 }
 
 /* thread function to listen for new messages and post them to the gtk
