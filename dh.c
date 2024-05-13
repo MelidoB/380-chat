@@ -9,8 +9,6 @@
 #include "dh.h"
 #include <string.h>
 #include <endian.h>
-#include <assert.h>
-#include "util.h"
 
 mpz_t q; /* "small" prime; should be 256 bits or more */
 mpz_t p; /* "large" prime; should be 2048 bits or more, with q|(p-1) */
@@ -153,13 +151,6 @@ int dhGen(mpz_t sk, mpz_t pk)
 	return 0;
 }
 
-int dhGenk(dhKey* k)
-{
-	assert(k);
-	initKey(k);
-	return dhGen(k->SK,k->PK);
-}
-
 /* see "Cryptographic Extraction and Key Derivation: The HKDF Scheme"
  * by H. Krawczyk, 2010 for details on the key derivation used here. */
 int dhFinal(mpz_t sk_mine, mpz_t pk_mine, mpz_t pk_yours, unsigned char* keybuf, size_t buflen)
@@ -170,7 +161,7 @@ int dhFinal(mpz_t sk_mine, mpz_t pk_mine, mpz_t pk_yours, unsigned char* keybuf,
 	unsigned char* SK = malloc(pLen);
 	memset(SK,0,pLen);
 	size_t nWritten; /* saves number of bytes written by Z2BYTES */
-	Z2BYTES(SK,&nWritten,x);
+	Z2BYTES(SK,nWritten,x);
 	const size_t maclen = 64; /* output len of sha512 */
 	unsigned char PRK[maclen];
 	memset(PRK,0,maclen);
@@ -193,13 +184,14 @@ int dhFinal(mpz_t sk_mine, mpz_t pk_mine, mpz_t pk_yours, unsigned char* keybuf,
 	uint64_t indexBE = index; /* key index, but always big endian */
 	memset(CTX,0,ctxlen);
 	if (mpz_cmp(pk_mine,pk_yours) < 0) {
-		Z2BYTES(CTX+maclen,NULL,pk_mine);
-		Z2BYTES(CTX+maclen+pLen,NULL,pk_yours);
+		Z2BYTES(CTX+maclen,nWritten,pk_mine);
+		Z2BYTES(CTX+maclen+pLen,nWritten,pk_yours);
 	} else {
-		Z2BYTES(CTX+maclen,NULL,pk_yours);
-		Z2BYTES(CTX+maclen+pLen,NULL,pk_mine);
+		Z2BYTES(CTX+maclen,nWritten,pk_yours);
+		Z2BYTES(CTX+maclen+pLen,nWritten,pk_mine);
 	}
 	memcpy(CTX+maclen+2*pLen,&indexBE,sizeof(indexBE));
+	/* NOTE: we discard nWritten and use all bytes regardless for CTX */
 	unsigned char K[maclen];
 	memset(K,0,maclen);
 	/* compute initial key chunk: */
@@ -253,9 +245,10 @@ int dh3Final(mpz_t a, mpz_t A, mpz_t x, mpz_t X, mpz_t B, mpz_t Y,
 	memset(KM,0,kmlen);
 	/* NOTE: we discard number of bytes actually written by Z2BYTES and always
 	 * use kmlen, so it is important that we 0 the buffer first. */
-	Z2BYTES(KM,NULL,AY);
-	Z2BYTES(KM+pLen,NULL,XY);
-	Z2BYTES(KM+2*pLen,NULL,XB);
+	size_t nw; /* saves number of bytes written by Z2BYTES (ignored) */
+	Z2BYTES(KM,nw,AY);
+	Z2BYTES(KM+pLen,nw,XY);
+	Z2BYTES(KM+2*pLen,nw,XB);
 	const size_t maclen = 64; /* output len of sha512 */
 	unsigned char PRK[maclen];
 	memset(PRK,0,maclen);
@@ -279,11 +272,11 @@ int dh3Final(mpz_t a, mpz_t A, mpz_t x, mpz_t X, mpz_t B, mpz_t Y,
 	memset(CTX,0,ctxlen);
 	/* NOTE: shouldn't swap X,Y since mpz_t params are effectively by-reference */
 	if (mpz_cmp(X,Y) < 0) {
-		Z2BYTES(CTX+maclen,NULL,X);
-		Z2BYTES(CTX+maclen+pLen,NULL,Y);
+		Z2BYTES(CTX+maclen,nw,X);
+		Z2BYTES(CTX+maclen+pLen,nw,Y);
 	} else {
-		Z2BYTES(CTX+maclen,NULL,Y);
-		Z2BYTES(CTX+maclen+pLen,NULL,X);
+		Z2BYTES(CTX+maclen,nw,Y);
+		Z2BYTES(CTX+maclen+pLen,nw,X);
 	}
 	memcpy(CTX+maclen+2*pLen,&indexBE,sizeof(indexBE));
 	unsigned char K[maclen];
@@ -313,13 +306,4 @@ int dh3Final(mpz_t a, mpz_t A, mpz_t x, mpz_t X, mpz_t B, mpz_t Y,
 	memset(KM,0,pLen);
 	memset(PRK,0,maclen);
 	return 0;
-}
-
-int dh3Finalk(dhKey* skA, dhKey* skX, dhKey* pkB, dhKey* pkY,
-		unsigned char* keybuf, size_t buflen)
-{
-	assert(skA && skX && pkB && pkY);
-	/* make sure secret key pieces are present: */
-	assert(mpz_cmp_ui(skA->SK,0) > 0 && mpz_cmp_ui(skX->SK,0) > 0);
-	return dh3Final(skA->SK,skA->PK,skX->SK,skX->PK,pkB->PK,pkY->PK,keybuf,buflen);
 }
