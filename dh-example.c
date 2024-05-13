@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <gmp.h>
 #include <string.h>
-#include "util.h"
 
 void testDH()
 {
@@ -96,9 +95,7 @@ int main()
 		// gmp_printf("Successfully read DH params:\nq = %Zd\np = %Zd\ng = %Zd\n",q,p,g);
 		printf("Successfully read DH params.\n");
 	}
-	printf("...testing DH key exchange...\n");
-	testDH();
-	printf("...testing 3DH key exchange...\n");
+	// testDH();
 	test3DH();
 	return 0;
 }

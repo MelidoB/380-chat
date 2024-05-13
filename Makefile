@@ -8,7 +8,7 @@ CFLAGS   := $(CFLAGS) $(COMMON)
 CXXFLAGS := $(CXXFLAGS) $(COMMON)
 CC       := gcc
 CXX      := g++
-LD       := $(CC)
+LD       := $(CXX)   # probably want $(CXX) for cpp source
 LDFLAGS  := $(LDFLAGS) # -L/path/to/libs/
 LDADD    := -lpthread -lcrypto -lgmp $(shell pkg-config --libs gtk+-3.0)
 INCLUDE  := $(shell pkg-config --cflags gtk+-3.0)
@@ -32,10 +32,10 @@ debug : all
 .PHONY : debug
 # }}}
 
-chat : $(IMPL) dh.o keys.o util.o
+chat : $(IMPL) dh.o keys.o
 	$(LD) $(LDFLAGS) -o $@ $^ $(LDADD)
 
-dh-example : dh-example.o dh.o keys.o util.o
+dh-example : dh-example.o dh.o
 	$(LD) $(LDFLAGS) -o $@ $^ $(LDADD)
 
 %.o : %.cpp $(HEADERS)
