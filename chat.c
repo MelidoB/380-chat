@@ -278,23 +278,69 @@ int main(int argc, char *argv[])
  * main loop for processing: */
 void* recvMsg(void*)
 {
-	size_t maxlen = 512;
-	char msg[maxlen+2]; /* might add \n and \0 */
-	ssize_t nbytes;
-	while (1) {
-		if ((nbytes = recv(sockfd,msg,maxlen,0)) == -1)
-			error("recv failed");
-		if (nbytes == 0) {
-			/* XXX maybe show in a status message that the other
-			 * side has disconnected. */
-			return 0;
-		}
-		char* m = malloc(maxlen+2);
-		memcpy(m,msg,nbytes);
-		if (m[nbytes-1] != '\n')
-			m[nbytes++] = '\n';
-		m[nbytes] = 0;
-		g_main_context_invoke(NULL,shownewmessage,(gpointer)m);
-	}
-	return 0;
+        char msg[MAX_MESSAGE_SIZE + 2]; /* might add \n and \0 */
+        ssize_t nbytes;
+
+        if(isclient){
+                initClientNet(hostname,port);
+        }
+        else{
+                initServerNet(port);
+        }
+        performHandshake();
+         while (1) {
+                // Receive the encrypted message
+                if ((nbytes = recv(sockfd, msg, MAX_MESSAGE_SIZE, 0)) == -1) {
+                        perror("recv failed");
+                        // Handle the error appropriately
+                        showStatusMessage("Error receiving message");
+                        return 0;
+                }
+
+                if (nbytes == 0) {
+                        // The other side has disconnected
+                        showStatusMessage("The other side has disconnected");
+                        return 0;
+                }
+
+                // Receive the MAC
+                unsigned char receivedMac[MAC_LEN];
+                if ((nbytes = recv(sockfd, receivedMac, MAC_LEN, 0)) == -1) {
+                        perror("recv failed");
+                        // Handle the error appropriately
+                        showStatusMessage("Error receiving MAC");
+                        return 0;
+                }
+                 // Decrypt the message
+                unsigned char decryptedMessage[MAX_MESSAGE_SIZE+MAC_LEN];
+                int decryptedLen = 0;
+
+                if (1 != EVP_DecryptUpdate(crecv, decryptedMessage, &decryptedLen, (const unsigned char*)msg, nbytes)) {
+                        ERR_print_errors_fp(stderr);
+                        // Handle decryption error (log error, show status message, etc.)
+                        showStatusMessage("Error decrypting message");
+                        return 0;
+                }
+                // Verify MAC
+                unsigned char computedMac[MAC_LEN];
+                HMAC(EVP_sha256(), macyou, 16, (const unsigned char*)decryptedMessage, decryptedLen, computedMac, NULL);
+
+                if (memcmp(receivedMac, computedMac, MAC_LEN) != 0) {
+                        // Handle MAC verification failure
+                        fprintf(stderr, "MAC verification failed\n");
+                        showStatusMessage("MAC verification failed");
+                        return 0;
+                }
+            // Process the decrypted message
+                char* m = malloc(decryptedLen + 2);
+                memcpy(m, decryptedMessage, decryptedLen);
+                if (m[decryptedLen - 1] != '\n')
+                        m[decryptedLen++] = '\n';
+                m[decryptedLen] = 0;
+
+                // Show the message in the GTK main loop
+                g_main_context_invoke(NULL, shownewmessage, (gpointer)m);
+
+        }
+        return 0;
 }
